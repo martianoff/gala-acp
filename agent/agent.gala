@@ -1,0 +1,95 @@
+package agent
+
+import (
+    "martianoff/gala/concurrent"
+    . "martianoff/gala/std"
+)
+
+// ============================================================================
+// gala-acp/agent — the transport-neutral AI-agent port + a Claude backend.
+//
+// This package is the IMPURE edge of gala-acp: it is where "an agent" stops
+// being pure data and becomes a live conversation (a subprocess, a socket, an
+// API client). The orchestrator talks to an agent only through the types in
+// this file; the bundled `claude` CLI adapter (claude_transport.gala) is the
+// default AgentTransport, and a future remote service can supply a different
+// one without any change here.
+//
+// The pure protocol kernel (envelope / ledger / delivery / the generic
+// AgentRunner run-contract) lives in the root `acp` package and never imports
+// this one — IO flows up to the orchestrator, never down into the protocol.
+// ============================================================================
+
+// AgentEvent is one thing an agent produces while working a turn.
+//
+//   AgentChunk              — a unit of assistant output text.
+//   AgentDiagnostic         — out-of-band diagnostic text (setup / health /
+//                              generic warning notices) surfaced alongside
+//                              output.
+//   AgentTransportAuthError — the transport layer (CLI / API client)
+//                              authenticated unsuccessfully and the session
+//                              cannot continue until the user fixes
+//                              credentials. Distinguished from AgentDiagnostic
+//                              so the orchestrator shows a recovery notice
+//                              instead of treating the dead session as a normal
+//                              turn end. Text carries the original transport
+//                              message for the audit log.
+//   AgentTurnEnded          — the agent finished the turn cleanly; no more
+//                              output until the next input.
+//   AgentFailed             — the event source broke; Err carries the cause.
+sealed type AgentEvent {
+    case AgentChunk(Text string)
+    case AgentDiagnostic(Text string)
+    case AgentTransportAuthError(Text string)
+    case AgentTurnEnded()
+    case AgentFailed(Err error)
+}
+
+// AgentInput is one thing the orchestrator hands to an agent during a turn.
+//
+//   PromptInput      — the user / orchestrator prompt for this turn.
+//   ToolResultInput  — the answer to a prior tool request, joined back to the
+//                      originating call by ToolUseId.
+sealed type AgentInput {
+    case PromptInput(Text string)
+    case ToolResultInput(ToolUseId string, Answer string)
+}
+
+// AgentSession is one live conversation turn with an agent.
+//
+//   Send      — deliver an AgentInput. Try carries a delivery failure.
+//   EndTurn   — signal "no more input this turn"; the agent may wrap up.
+//   NextEvent — the next AgentEvent, asynchronously. Re-invoked by the caller
+//               as a self-perpetuating pump (one in flight at a time).
+//   Close     — terminate the session and release its resources.
+type AgentSession interface {
+    Send(in AgentInput) Try[bool]
+    EndTurn() Try[bool]
+    NextEvent() concurrent.Future[AgentEvent]
+    Close() Try[bool]
+}
+
+// AgentTransport opens sessions. It is the single injection point: the
+// orchestrator defaults to the local CLI transport but any caller can pass
+// another implementation instead.
+type AgentTransport interface {
+    Open(spec AgentSpec) Try[AgentSession]
+}
+
+// AgentSpec is everything a transport needs to start a session. It is
+// deliberately free of any orchestration detail — it describes WHO and WHERE,
+// never HOW the agent is run, and it carries no consumer-specific member type:
+// the only per-agent knob a transport needs is the optional model name.
+//
+//   Model                       — the model to pin (None = the CLI default).
+//   Workspace                   — the working directory the session runs in.
+//   SessionId                   — the conversation id (see session_id.gala).
+//   IsNewSession                — fresh conversation vs. resumed one.
+//   DangerouslySkipPermissions  — opt-in, surfaced from the consumer's config.
+struct AgentSpec(
+    Model                      Option[string],
+    Workspace                  string,
+    SessionId                  string,
+    IsNewSession               bool,
+    DangerouslySkipPermissions bool,
+)

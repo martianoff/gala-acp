@@ -7,14 +7,14 @@ extracted from [`gala_team`](https://github.com/martianoff/gala_team)'s
 [`gala-assimilator`](https://github.com/martianoff/gala-assimilator)'s engine
 ACP — one library, reused by both.
 
-Everything here is **pure data + pure functions**: no subprocess, no
-filesystem, no UI, no clock. Side effects (streaming over a socket, spawning a
-subprocess, ticking a live UI) live at the edges of the consuming application;
-the protocol itself never performs IO.
+The **`acp` kernel** is **pure data + pure functions**: no subprocess, no
+filesystem, no UI, no clock. The optional **`agent` package** is the impure
+edge — a transport-neutral agent port plus a `claude` CLI backend — kept in its
+own package so the kernel stays pure and dependency-light.
 
 ## What's inside
 
-One package, `acp`, four concerns:
+### `acp` — the pure protocol kernel
 
 | File | What it gives you |
 |------|-------------------|
@@ -22,6 +22,24 @@ One package, `acp`, four concerns:
 | `ledger.gala` | `Ledger` + `DedupById` — the durable dedup gate keyed on that identity. Admit each `Id` exactly once; re-emitted chunks / replays / redeliveries collapse. |
 | `delivery.gala` | The delivery / ack / retry / nudge **liveness FSM** (`DeliveryState`, `DeliveryAction`, `Tick`, `OnChunk`, `OnTerminal`, `AggregateNudges`). A pure function of (state, event, clock, policy). |
 | `run.gala` | The generic **agent-run contract**: `AgentRunner[A, R, C]` port, `RunTranscript` (stream-as-data), `RunOutcome` (result / clarification / aborted terminus), `ProgressEvent`. |
+
+### `agent` — the transport port + Claude backend (`github.com/martianoff/gala-acp/agent`)
+
+The impure edge: where "an agent" stops being pure data and becomes a live
+conversation. Import this only if you need to actually *run* an agent.
+
+| File | What it gives you |
+|------|-------------------|
+| `agent.gala` | The transport-neutral port: `AgentTransport` (open a session), `AgentSession` (`Send`/`EndTurn`/`NextEvent`/`Close`), and the `AgentEvent` / `AgentInput` / `AgentSpec` value types. Swap the backend without touching the orchestrator. |
+| `claude_transport.gala` | `ClaudeProcessTransport` — the default backend: a local `claude` CLI subprocess over stream-json (prompt on stdin, `--input-format`/`--output-format stream-json`), with the IO ↔ `AgentEvent` mapping and the transport-auth-error gate. |
+| `claude_stream_json.gala` | The claude-code stream-json classifiers/extractors (envelope shape, tool_result blocks, stale-resume detection). |
+| `session_id.gala` | `NewSessionId` — RFC 4122 v4 UUIDs for `--session-id` / `--resume`, so parallel member subprocesses don't race on claude's "most recent in cwd" semantics. |
+
+`AgentSpec` carries only what a transport needs (`Model`, `Workspace`,
+`SessionId`, `IsNewSession`, `DangerouslySkipPermissions`) — no consumer-
+specific member type. The `TraceClaudeLine` diagnostic hook (`trace.gala`) is a
+documented no-op: tracing to a debug sink is a consumer concern, so the package
+ships no file IO.
 
 ### Vocabulary is the consumer's
 

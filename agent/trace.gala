@@ -1,0 +1,24 @@
+package agent
+
+// trace.gala — the stream-json classifier's diagnostic hook.
+//
+// The stream-json parser calls TraceClaudeLine for every claude envelope it
+// inspects, recording what it kept or dropped and why. In gala-acp this is a
+// deliberate NO-OP: writing traces to a debug sink is an impure, consumer-
+// specific concern (a log file, a ring buffer, a UI panel), so the library
+// keeps it out of the transport and ships no file IO.
+//
+// A consumer that wants per-line claude stream traces forks this one function
+// to append records to its own sink — every call site already passes the full
+// diagnostic tuple (member, raw envelope, extracted visible text, error text,
+// whether the line was dropped, and a human reason), so the hook is the only
+// thing that has to change.
+func TraceClaudeLine(
+    member string,
+    raw string,
+    visible string,
+    errText string,
+    dropped bool,
+    reason string,
+) {
+}

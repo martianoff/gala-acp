@@ -1,0 +1,52 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+# gala-acp/agent — the transport-neutral AI-agent port + the default Claude CLI
+# backend (stream-json transport, session ids, argv). This is the impure edge of
+# gala-acp; the pure protocol kernel lives in the root //:gala_acp package and
+# does not depend on this one.
+
+gala_library(
+    name = "agent",
+    srcs = [
+        "agent.gala",
+        "claude_stream_json.gala",
+        "claude_transport.gala",
+        "session_id.gala",
+        "trace.gala",
+    ],
+    importpath = "github.com/martianoff/gala-acp/agent",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_google_uuid//:uuid",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//go_interop",
+        "@gala//json",
+        "@gala//subprocess",
+    ],
+)
+
+gala_test(
+    name = "agent_test",
+    srcs = [
+        "claude_stream_json_test.gala",
+        "claude_transport_test.gala",
+    ],
+    importpath = "github.com/martianoff/gala-acp/agent",
+    lib_srcs = [
+        "agent.gala",
+        "claude_stream_json.gala",
+        "claude_transport.gala",
+        "session_id.gala",
+        "trace.gala",
+    ],
+    pkg = "agent",
+    deps = [
+        "@com_github_google_uuid//:uuid",
+        "@gala//collection_immutable",
+        "@gala//concurrent",
+        "@gala//go_interop",
+        "@gala//json",
+        "@gala//subprocess",
+    ],
+)

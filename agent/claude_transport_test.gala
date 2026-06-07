@@ -1,0 +1,197 @@
+package agent
+
+import (
+    "errors"
+    "strings"
+    . "martianoff/gala/test"
+    . "martianoff/gala/std"
+)
+
+// Lock in the `claude` adapter's event mapping and the AgentEvent →
+// Msg boundary.
+
+// A stdout line becomes an output chunk.
+func TestClassifyClaudeRead_LineIsChunk(t T) T {
+    return classifyClaudeRead(Success("hello world")) match {
+        case AgentChunk(text) => Eq(t, text, "hello world")
+        case _                => IsTrue(t, false)
+    }
+}
+
+// Transport-auth-error guard. The claude-code CLI prints
+// "Failed to authenticate. API Error: 401 Invalid authentication
+// credentials" to stdout as plain prose when its OAuth token has
+// been rejected. Past behaviour classified it as an AgentChunk → the
+// UI committed it to the conversation as the agent's reply, the
+// directive parser found zero @summary/@blocked in the otherwise-
+// empty turn buffer, the FSM stepped TLThinking → Idle, and the
+// prior gate's pending user question was forgotten. The transport
+// now routes the line onto the typed AgentTransportAuthError variant
+// — the UI maps it to RtTransportAuthError, surfaces a warn toast +
+// LastError, AND records the failure in TransportAuthErrorMembers so
+// onSessionFailed can pattern-match the flag instead of substring-
+// scanning LastError text.
+func TestClassifyClaudeRead_AuthErrorIsTransportAuthError(t T) T {
+    val authLine = "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    return classifyClaudeRead(Success(authLine)) match {
+        case AgentTransportAuthError(text) => Eq(t, text, authLine)
+        case _                             => IsTrue(t, false)
+    }
+}
+
+func TestClassifyClaudeRead_403IsTransportAuthError(t T) T {
+    return classifyClaudeRead(Success("API Error: 403 Forbidden")) match {
+        case AgentTransportAuthError(_) => IsTrue(t, true)
+        case _                          => IsTrue(t, false)
+    }
+}
+
+// stderr-channel auth errors get the same typed routing — the
+// classifier promotes them out of AgentDiagnostic so the UI's typed
+// handler captures them whether they came in on stdout or stderr.
+func TestClassifyClaudeDiagnostic_AuthErrorIsTransportAuthError(t T) T {
+    val authLine = "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    return classifyClaudeDiagnostic(Success(authLine)) match {
+        case AgentTransportAuthError(text) => Eq(t, text, authLine)
+        case _                             => IsTrue(t, false)
+    }
+}
+
+// Regression: a stream-json envelope that merely QUOTES the auth
+// wording is protocol payload, not a credential failure. A member
+// reading the classifier's own source (or any file/test that contains
+// the canonical 401 prose) streams it back inside an envelope; the
+// shape-first gate must let it through as a normal chunk. Without the
+// gate this exact line killed the reading member's turn.
+func TestClassifyClaudeRead_AuthWordingInEnvelopeIsChunk(t T) T {
+    val envelope = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"the classifier matches 'Failed to authenticate. API Error: 401 Invalid authentication credentials'\"}]}}"
+    return classifyClaudeRead(Success(envelope)) match {
+        case AgentChunk(text) => Eq(t, text, envelope)
+        case _                => IsTrue(t, false)
+    }
+}
+
+// Same protection on the stderr channel: a tool_result envelope echoing
+// a file that contains the auth wording stays an AgentDiagnostic.
+func TestClassifyClaudeDiagnostic_AuthWordingInEnvelopeIsDiagnostic(t T) T {
+    val envelope = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"98 // e.g. Failed to authenticate. API Error: 401 Invalid authentication credentials\"}]}}"
+    return classifyClaudeDiagnostic(Success(envelope)) match {
+        case AgentDiagnostic(text) => Eq(t, text, envelope)
+        case _                     => IsTrue(t, false)
+    }
+}
+
+// Looks-like-transport-auth-error: substring matcher, case-
+// insensitive, also matches wrapped forms like
+// "<member> stderr: Failed to authenticate..." that the UI's
+// onSessionFailed guard checks against LastError.
+func TestLooksLikeTransportAuthError_Matches401Verbatim(t T) T {
+    return IsTrue(t, LooksLikeTransportAuthError("Failed to authenticate. API Error: 401 Invalid authentication credentials"))
+}
+
+func TestLooksLikeTransportAuthError_Matches403(t T) T {
+    return IsTrue(t, LooksLikeTransportAuthError("API Error: 403 Forbidden"))
+}
+
+func TestLooksLikeTransportAuthError_MatchesCaseInsensitive(t T) T {
+    return IsTrue(t, LooksLikeTransportAuthError("FAILED TO AUTHENTICATE"))
+}
+
+func TestLooksLikeTransportAuthError_MatchesWrappedLastError(t T) T {
+    val wrapped = "Iris stderr: Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    return IsTrue(t, LooksLikeTransportAuthError(wrapped))
+}
+
+func TestLooksLikeTransportAuthError_RejectsOrdinaryProse(t T) T {
+    return IsTrue(t, !LooksLikeTransportAuthError("Both findings confirmed."))
+}
+
+func TestLooksLikeTransportAuthError_RejectsEmpty(t T) T {
+    return IsTrue(t, !LooksLikeTransportAuthError(""))
+}
+
+// Length cap: a real auth rejection is a short out-of-band line. A
+// multi-kilobyte blob that happens to contain the wording (buffered
+// output, an accumulated error surface) must not trip the matcher.
+func TestLooksLikeTransportAuthError_RejectsHugeBlob(t T) T {
+    val padding = strings.Repeat("x", 600)
+    val blob = padding + " Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    return IsTrue(t, !LooksLikeTransportAuthError(blob))
+}
+
+// Anchored signature: a bare HTTP code with no auth/credential token is
+// not auth-conclusive (the API reuses "API Error: 4xx" prose for
+// non-auth failures), so it must not match on its own.
+func TestLooksLikeTransportAuthError_RejectsBareCodeWithoutAuthToken(t T) T {
+    return IsTrue(t, !LooksLikeTransportAuthError("API Error: 401"))
+}
+
+// A clean end ("EOF" failure) is AgentTurnEnded, not AgentFailed.
+func TestClassifyClaudeRead_EofIsTurnEnded(t T) T {
+    return classifyClaudeRead(Failure[string](errors.New("EOF"))) match {
+        case AgentTurnEnded() => IsTrue(t, true)
+        case _                => IsTrue(t, false)
+    }
+}
+
+// Any other read failure is AgentFailed carrying the cause.
+func TestClassifyClaudeRead_RealErrorIsFailed(t T) T {
+    return classifyClaudeRead(Failure[string](errors.New("broken stream"))) match {
+        case AgentFailed(err) => Eq(t, err.Error(), "broken stream")
+        case _                => IsTrue(t, false)
+    }
+}
+
+// A stderr line becomes a diagnostic.
+func TestClassifyClaudeDiagnostic_LineIsDiagnostic(t T) T {
+    return classifyClaudeDiagnostic(Success("auth required")) match {
+        case AgentDiagnostic(text) => Eq(t, text, "auth required")
+        case _                     => IsTrue(t, false)
+    }
+}
+
+// The diagnostic stream terminates on any read failure.
+func TestClassifyClaudeDiagnostic_EofIsTurnEnded(t T) T {
+    return classifyClaudeDiagnostic(Failure[string](errors.New("EOF"))) match {
+        case AgentTurnEnded() => IsTrue(t, true)
+        case _                => IsTrue(t, false)
+    }
+}
+
+// IsLongRunningClaudeToolName: claude-code's Task and Workflow tools
+// share the "parent goes silent on visible-text channels for the
+// tool's full duration" shape. UI tracks their tool_use ids in
+// OutstandingTaskTools to pause the silence watchdog. Lock the list
+// down so future "let's also add this name" changes are conscious —
+// every false add stops legitimate hang detection for that tool.
+
+func TestIsLongRunningClaudeToolName_Task(t T) T {
+    return IsTrue(t, IsLongRunningClaudeToolName("Task"))
+}
+
+// Workflow runs a multi-phase parallel-agent script. A real session
+// emitted 212 task_progress envelopes from one Workflow tool_use
+// while the orchestrator had no signal a tool was in flight.
+func TestIsLongRunningClaudeToolName_Workflow(t T) T {
+    return IsTrue(t, IsLongRunningClaudeToolName("Workflow"))
+}
+
+// Short / synchronous tools must NOT pause the watchdog — a real
+// hang during a Read / Bash / Edit must surface.
+func TestIsLongRunningClaudeToolName_RejectsShortTools(t T) T {
+    val t1 = IsTrue(t,  !IsLongRunningClaudeToolName("Read"))
+    val t2 = IsTrue(t1, !IsLongRunningClaudeToolName("Bash"))
+    val t3 = IsTrue(t2, !IsLongRunningClaudeToolName("Edit"))
+    return IsTrue(t3, !IsLongRunningClaudeToolName("Glob"))
+}
+
+// Case-sensitive — claude-code emits canonical PascalCase tool
+// names; a lowercase variant is NOT the same tool.
+func TestIsLongRunningClaudeToolName_CaseSensitive(t T) T {
+    val t1 = IsTrue(t,  !IsLongRunningClaudeToolName("workflow"))
+    return IsTrue(t1, !IsLongRunningClaudeToolName("task"))
+}
+
+func TestIsLongRunningClaudeToolName_RejectsEmpty(t T) T {
+    return IsTrue(t, !IsLongRunningClaudeToolName(""))
+}
