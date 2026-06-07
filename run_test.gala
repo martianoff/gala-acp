@@ -1,0 +1,92 @@
+package acp
+
+import (
+    . "martianoff/gala/test"
+    . "martianoff/gala/std"
+    . "martianoff/gala/collection_immutable"
+)
+
+// The run contract is generic over (Assignment, Result, Clarification). These
+// tests instantiate it with concrete string payloads — proving the generic
+// sealed type, the transcript struct, and the AgentRunner port transpile and
+// round-trip through the port.
+
+func progressPrefix(task string) Array[RunStep] =
+    ArrayOf[RunStep](
+        ProgressStep(task, "reading", "reading source unit"),
+        ProgressStep(task, "emitting", "emitting target text"),
+    )
+
+// ----- the terminus invariant -----------------------------------------------
+
+func TestRunOutcomeTag_AllVariants(t T) T {
+    val r = OutcomeResult[string, string](Value = "done")
+    val c = OutcomeClarification[string, string](Value = "is x nullable?")
+    val a = OutcomeAborted[string, string](Reason = "boom")
+    val t1 = Eq(t,  RunOutcomeTag(r), "result")
+    val t2 = Eq(t1, RunOutcomeTag(c), "clarification")
+    return    Eq(t2, RunOutcomeTag(a), "aborted")
+}
+
+func TestCancelOutcomeTag_BothVariants(t T) T {
+    val t1 = Eq(t, CancelOutcomeTag(Cancelled()), "cancelled")
+    return Eq(t1, CancelOutcomeTag(NotRunning()), "not_running")
+}
+
+// ----- transcript shape ------------------------------------------------------
+
+// A transcript carries its streamed steps plus exactly one sealed terminus, and
+// the first step is a ProgressEvent in the expected phase.
+func TestRunTranscript_StepsThenTerminus(t T) T {
+    val tx = RunTranscript[string, string](
+        Steps = progressPrefix("task-1"),
+        Final = OutcomeResult[string, string](Value = "// translation"),
+    )
+    val t1 = Eq(t, tx.Steps.Length(), 2)
+    val t2 = tx.Steps.Get(0) match {
+        case StepProgress(ev) => Eq(t1, ev.Phase, "reading")
+    }
+    return tx.Final match {
+        case OutcomeResult(v)        => Eq(t2, v, "// translation")
+        case OutcomeClarification(_) => IsTrue(t2, false)
+        case OutcomeAborted(_)       => IsTrue(t2, false)
+    }
+}
+
+// ----- the port --------------------------------------------------------------
+
+// StaticRunner drives each terminus THROUGH the port, not just via hand-built
+// transcripts. A result run round-trips the payload and the join id.
+func TestStaticRunner_ResultRoundTrip(t T) T {
+    val tx = RunTranscript[string, string](
+        Steps = progressPrefix("task-1"),
+        Final = OutcomeResult[string, string](Value = "ok"),
+    )
+    val runner = StaticRunner[string, string, string](tx, Cancelled())
+    val got = runner.Submit("assignment-1")
+    val t1 = GreaterOrEq(t, got.Steps.Length(), 1)
+    val t2 = got.Final match {
+        case OutcomeResult(v)        => Eq(t1, v, "ok")
+        case OutcomeClarification(_) => IsTrue(t1, false)
+        case OutcomeAborted(_)       => IsTrue(t1, false)
+    }
+    return Eq(t2, CancelOutcomeTag(runner.Cancel("task-1")), "cancelled")
+}
+
+// A clarification run ENDS asking a question (the resolution loop), reachable
+// through the same port.
+func TestStaticRunner_ClarificationTerminus(t T) T {
+    val tx = RunTranscript[string, string](
+        Steps = progressPrefix("task-1"),
+        Final = OutcomeClarification[string, string](Value = "is x nullable?"),
+    )
+    val runner = StaticRunner[string, string, string](tx, NotRunning())
+    val got = runner.Submit("assignment-1")
+    val t1 = got.Final match {
+        case OutcomeClarification(q) => Eq(t, q, "is x nullable?")
+        case OutcomeResult(_)        => IsTrue(t, false)
+        case OutcomeAborted(_)       => IsTrue(t, false)
+    }
+    // NotRunning is reachable through the port too.
+    return Eq(t1, CancelOutcomeTag(runner.Cancel("task-1")), "not_running")
+}

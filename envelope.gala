@@ -1,0 +1,138 @@
+package acp
+
+import (
+    . "martianoff/gala/std"
+)
+
+// ============================================================================
+// gala-acp — the Agent Communication Protocol kernel.
+//
+// A standalone, transport-neutral GALA library shared by every project that
+// dispatches work to autonomous agents and has to do it RELIABLY. It is pure
+// data + pure functions: no subprocess, no filesystem, no UI, no clock. Side
+// effects (streaming over a socket, spawning a subprocess, ticking a live UI)
+// live at the edges in the consuming application; the protocol itself never
+// performs IO.
+//
+// Four concerns, four files:
+//
+//   envelope.gala — the on-the-wire envelope + its content-hash identity.
+//   ledger.gala   — the idempotent dedup gate keyed on that identity.
+//   delivery.gala — the delivery / ack / retry / nudge liveness FSM.
+//   run.gala      — the generic agent-run contract (port + transcript).
+//
+// The whole reliability story rests on ONE property: an Envelope's identity is
+// a deterministic content hash, so re-deriving the same inputs always yields
+// the same Id. Idempotency, dedup, and the stale-redelivery defence all fall
+// out of that single fact.
+//
+// VOCABULARY IS THE CONSUMER'S. This kernel is deliberately free of any
+// domain message taxonomy. `Kind` is an opaque lowercase string tag, so one
+// application can speak "dispatch / finished / consult" while another speaks
+// "task_assignment / result / verdict" — both ride the same envelope, the same
+// dedup Ledger, the same delivery FSM. A consumer that wants an exhaustive
+// sealed kind keeps its own sealed type and projects it to the tag at the
+// boundary (the tag is all the kernel needs for identity and routing).
+// ============================================================================
+
+// Envelope is one message on the agent-to-agent wire.
+//
+//   Id        — content hash of (Sender, Recipient, Kind, Body, Epoch). The
+//               idempotency key: re-deriving an Envelope from the same inputs
+//               yields the same Id, so a duplicated stream chunk decodes to an
+//               Envelope the Ledger already admitted.
+//   Sender    — the producer's address (a member name, an orchestrator token,
+//               a user token — the consumer owns the address space).
+//   Recipient — the addressee, in the same address space.
+//   Kind      — an opaque lowercase tag naming what this message IS. Frozen by
+//               the consumer: changing a tag re-keys every historical Id, which
+//               would defeat the dedup Ledger.
+//   Body      — the payload text (deliverable, question, reason, …).
+//   Attempt   — 1-based delivery attempt; bumped by WithAttempt on redelivery.
+//   InReplyTo — causal link to the message this answers. Metadata, NOT identity.
+//   Epoch     — monotone per (Sender, Recipient). A re-dispatch bumps the epoch
+//               so a late duplicate of the PREVIOUS turn hashes differently and
+//               cannot be mistaken for the live one — this is what defeats stale
+//               redelivery across a re-dispatch without a side-channel watermark.
+struct Envelope(
+    Id        string,
+    Sender    string,
+    Recipient string,
+    Kind      string,
+    Body      string,
+    Attempt   int,
+    InReplyTo Option[string],
+    Epoch     int,
+)
+
+// NewEnvelope builds an Envelope and computes its content-hash Id. Attempt
+// starts at 1; InReplyTo is unset (use WithReplyTo to thread a causal link — it
+// does NOT change the Id, which is intentional: reply linkage is metadata, not
+// identity).
+func NewEnvelope(
+    sender string,
+    recipient string,
+    kind string,
+    body string,
+    epoch int,
+) Envelope = Envelope(
+    Id        = ContentHash(sender, recipient, kind, body, epoch),
+    Sender    = sender,
+    Recipient = recipient,
+    Kind      = kind,
+    Body      = body,
+    Attempt   = 1,
+    InReplyTo = None[string](),
+    Epoch     = epoch,
+)
+
+// WithReplyTo threads a causal parent without disturbing identity.
+// Copy-update style — never mutate the original.
+func WithReplyTo(e Envelope, parentId string) Envelope =
+    e.Copy(InReplyTo = Some[string](parentId))
+
+// WithAttempt stamps the delivery attempt without disturbing identity — the
+// same logical message redelivered is the SAME message (same Id), only the
+// attempt counter advances. Keeping Attempt out of the hash is deliberate: the
+// Ledger must collapse attempt 1 and attempt 2 of one dispatch to a single
+// admitted entry.
+func WithAttempt(e Envelope, attempt int) Envelope =
+    e.Copy(Attempt = attempt)
+
+// ContentHash is a deterministic, collision-resistant digest of the identity
+// tuple, rendered as a 16-hex-digit string.
+//
+// It hashes each field INDEPENDENTLY with HashString/HashInt and folds them
+// with HashCombine in a fixed tree. Per-field hashing (rather than hashing a
+// concatenation) is what makes field boundaries unambiguous:
+// HashCombine(HashString("a"), HashString("bc")) is structurally distinct from
+// HashCombine(HashString("ab"), HashString("c")) — no delimiter or
+// length-prefix gymnastics required.
+//
+// Two folds over a re-associated / re-ordered field tree produce two 32-bit
+// words; their concatenation widens the effective key space to ~2^64 so the
+// birthday bound stays far above any realistic per-session message count. The
+// constants here are frozen for the same reason a consumer's Kind tags are: the
+// Id is a durable dedup key.
+func ContentHash(
+    sender string,
+    recipient string,
+    kind string,
+    body string,
+    epoch int,
+) string {
+    val hs = HashString(sender)
+    val hr = HashString(recipient)
+    val hk = HashString(kind)
+    val hb = HashString(body)
+    val he = HashInt(int64(epoch))
+    val word = HashCombine(
+        HashCombine(HashCombine(hs, hr), HashCombine(hk, hb)),
+        he,
+    )
+    val mix = HashCombine(
+        HashCombine(he, hb),
+        HashCombine(HashCombine(hk, hr), hs),
+    )
+    return f"$word%08x" + f"$mix%08x"
+}

@@ -1,0 +1,122 @@
+package acp
+
+import (
+    . "martianoff/gala/collection_immutable"
+)
+
+// ============================================================================
+// run.gala — the generic agent-run contract.
+//
+// Where envelope/ledger/delivery model the RELIABLE-MESSAGING half of the
+// protocol (identity, dedup, liveness), this file models the REQUEST/RESPONSE
+// half: an orchestrator hands an agent one assignment and gets back a stream of
+// progress that terminates in exactly one outcome — a result, a clarification
+// request, or an abort.
+//
+// It is generic over the consumer's payload types so each application plugs in
+// its own assignment / result / clarification shapes while sharing the port,
+// the transcript, and the terminus invariant:
+//
+//   A — the assignment handed to the agent (what to do).
+//   R — the result payload produced on success.
+//   C — the clarification payload produced when the agent needs an answer.
+//
+// STREAM-AS-DATA. A run's "stream" is plain immutable data: an ordered Array of
+// intermediate steps plus a single sealed terminus. A pull-iterator or callback
+// sink would imply suspension and side effects — exactly the IO the protocol
+// must NOT contain. A value carries no effects, so the contract stays pure and
+// the consumer keeps its IO at the edges. The terminus invariant ("every run
+// ends in exactly one outcome") becomes STRUCTURAL: Final is a separate,
+// always-present sealed field, not the hoped-for last element of an array.
+// ============================================================================
+
+// ProgressEvent is one streamed status note while the agent works. Phase is an
+// opaque tag (e.g. "reading" / "emitting" / "verifying") so the contract stays
+// domain-neutral; the consumer drives a live ticker off it without the kernel
+// hard-coding a phase taxonomy. Task is the correlation id joining a stream of
+// events to the assignment that produced them.
+struct ProgressEvent(
+    Task  string,
+    Phase string,
+    Note  string,
+)
+
+// RunStep is one non-terminal item the agent emits while working. Sealed with a
+// single case for now: a run terminus is deliberately NOT a RunStep, so a step
+// can never be mistaken for the end of a run. One case still leaves room for
+// future non-terminal step kinds without implying a run can end mid-array.
+sealed type RunStep {
+    case StepProgress(Event ProgressEvent)
+}
+
+// RunOutcome is the sealed terminus of a run — exactly how a Submit ends.
+// Sealed so every consumer must handle all three ways a run can finish.
+sealed type RunOutcome[R any, C any] {
+    case OutcomeResult(Value R)              // agent produced a result
+    case OutcomeClarification(Value C)       // agent needs an answer; run ends here
+    case OutcomeAborted(Reason string)       // wholesale failure / cancelled mid-run
+}
+
+// RunTranscript is the full outcome of a Submit: the ordered intermediate steps
+// followed by exactly one sealed terminus.
+struct RunTranscript[R any, C any](
+    Steps Array[RunStep],
+    Final RunOutcome[R, C],
+)
+
+// CancelOutcome is the result of asking the runner to cancel a task. A pure
+// acknowledgement value — the actual teardown is the implementation's IO, done
+// before it returns this.
+sealed type CancelOutcome {
+    case Cancelled()  // the task was running and has been stopped
+    case NotRunning() // no live task with that id (already done / never seen)
+}
+
+// AgentRunner is the run-contract port: the orchestrator's only handle on an
+// agent backend. Modeled as a struct of function values rather than a Go-style
+// interface — the GALA-idiomatic way to express a port. A backend is a value
+// you can build, pass, and swap; tests inject a scripted runner with no
+// subtyping ceremony.
+//
+//   Submit: A -> RunTranscript[R, C] (the stream-as-data).
+//   Cancel: task id (string) -> CancelOutcome.
+//
+// The function values are pure from the contract's point of view; a real
+// backend performs its IO inside them and hands back the resulting value.
+struct AgentRunner[A any, R any, C any](
+    Submit func(A) RunTranscript[R, C],
+    Cancel func(string) CancelOutcome,
+)
+
+// ProgressStep is the convenience constructor for the common StepProgress case.
+func ProgressStep(task string, phase string, note string) RunStep =
+    StepProgress(Event = ProgressEvent(Task = task, Phase = phase, Note = note))
+
+// StaticRunner is the test/seam-marker backend: a runner whose Submit ignores
+// its input and always returns the supplied transcript, and whose Cancel always
+// returns the supplied CancelOutcome. It gives an orchestrator and its tests a
+// real AgentRunner value to run against before any production backend exists,
+// and lets each RunOutcome / CancelOutcome case be exercised THROUGH THE PORT
+// rather than only via hand-built transcripts.
+func StaticRunner[A any, R any, C any](
+    transcript RunTranscript[R, C],
+    cancel CancelOutcome,
+) AgentRunner[A, R, C] = AgentRunner[A, R, C](
+    Submit = (_) => transcript,
+    Cancel = (_) => cancel,
+)
+
+// RunOutcomeTag projects a RunOutcome to a stable lowercase token — the same
+// tag-plus-accessor idiom delivery uses, so a cross-package consumer can
+// dispatch by string compare without destructuring the generic sealed type.
+func RunOutcomeTag[R any, C any](o RunOutcome[R, C]) string = o match {
+    case OutcomeResult(_)        => "result"
+    case OutcomeClarification(_) => "clarification"
+    case OutcomeAborted(_)       => "aborted"
+}
+
+// CancelOutcomeTag projects a CancelOutcome to a stable lowercase token.
+func CancelOutcomeTag(c CancelOutcome) string = c match {
+    case Cancelled()  => "cancelled"
+    case NotRunning() => "not_running"
+}

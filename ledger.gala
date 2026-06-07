@@ -1,0 +1,51 @@
+package acp
+
+import (
+    . "martianoff/gala/std"
+    . "martianoff/gala/collection_immutable"
+)
+
+// ============================================================================
+// ledger.gala — the durable dedup gate keyed on Envelope identity.
+//
+// Idempotency is the whole point: re-deriving an Envelope from a byte-identical
+// duplicate input yields the SAME content-hash Id, and the Ledger admits each
+// Id exactly once. A re-emitted stream chunk, a respawn replay, or a
+// redelivery of an already-handled message all resolve to the same Id and are
+// rejected after the first admit — no fingerprint latch, no per-target
+// watermark, no side-channel "already fired" map required.
+// ============================================================================
+
+// Ledger remembers every Id it has admitted. Immutable: Admit returns a new
+// Ledger so the caller threads it through its model exactly like any other
+// piece of orchestration state.
+struct Ledger(
+    Seen HashSet[string],
+)
+
+// EmptyLedger is the zero state — nothing admitted yet.
+func EmptyLedger() Ledger = Ledger(Seen = EmptyHashSet[string]())
+
+// Admit returns (nextLedger, Some(e)) the first time an Id is seen and
+// (sameLedger, None) for an Id already admitted. The None case is the durable
+// "we already acted on this" gate.
+func (l Ledger) Admit(e Envelope) Tuple[Ledger, Option[Envelope]] {
+    if (l.Seen.Contains(e.Id)) {
+        return (l, None[Envelope]())
+    }
+    return (l.Copy(Seen = l.Seen.Add(e.Id)), Some[Envelope](e))
+}
+
+// DedupById keeps the first occurrence of each Id, preserving order. This is
+// the stateless sibling of Admit: collapse a freshly-decoded batch (e.g. a
+// buffer re-parsed after a duplicate chunk grew it) down to one Envelope per
+// identity before it ever reaches a Ledger.
+func DedupById(envs Array[Envelope]) Array[Envelope] {
+    val seed = (EmptyArray[Envelope](), EmptyHashSet[string]())
+    val (out, _) = envs.FoldLeft(seed, (acc, e) => {
+        val (kept, seen) = acc
+        if (seen.Contains(e.Id)) (kept, seen)
+        else                     (kept.Append(e), seen.Add(e.Id))
+    })
+    return out
+}

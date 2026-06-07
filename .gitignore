@@ -1,0 +1,4 @@
+/bazel-*
+*.gen.go
+.gala
+.claude

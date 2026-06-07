@@ -1,0 +1,56 @@
+package acp
+
+import (
+    . "martianoff/gala/test"
+    . "martianoff/gala/std"
+    . "martianoff/gala/collection_immutable"
+)
+
+func dispatch(body string) Envelope =
+    NewEnvelope("_lead", "Felix", "dispatch", body, 0)
+
+// ----- Ledger ---------------------------------------------------------------
+
+// An Id is admitted exactly once; the duplicate is rejected (None).
+func TestLedger_AdmitsOnceRejectsDuplicate(t T) T {
+    val m = dispatch("work")
+    val (l1, first) = EmptyLedger().Admit(m)
+    val (_, second) = l1.Admit(m)
+    val t1 = IsSome(t, first)
+    return IsNone(t1, second)
+}
+
+// Distinct messages both admit.
+func TestLedger_DistinctMessagesBothAdmit(t T) T {
+    val a = dispatch("a")
+    val b = dispatch("b")
+    val (l1, fa) = EmptyLedger().Admit(a)
+    val (_, fb) = l1.Admit(b)
+    val t1 = IsSome(t, fa)
+    return IsSome(t1, fb)
+}
+
+// A redelivered message (same Id, bumped attempt) is collapsed to the single
+// admitted entry — attempt is metadata, not identity.
+func TestLedger_RedeliveryCollapses(t T) T {
+    val m = dispatch("work")
+    val (l1, _) = EmptyLedger().Admit(m)
+    val (_, again) = l1.Admit(WithAttempt(m, 2))
+    return IsNone(t, again)
+}
+
+// ----- DedupById ------------------------------------------------------------
+
+// DedupById keeps the first occurrence of each Id, preserving order.
+func TestDedupById_CollapsesDuplicatesPreservingOrder(t T) T {
+    val a = dispatch("a")
+    val b = dispatch("b")
+    val input = ArrayOf[Envelope](a, b, a, b, a)
+    val out = DedupById(input)
+    val t1 = Eq(t, out.Length(), 2)
+    val t2 = Eq(t1, out.Get(0).Body, "a")
+    return Eq(t2, out.Get(1).Body, "b")
+}
+
+func TestDedupById_EmptyIsEmpty(t T) T =
+    Eq(t, DedupById(EmptyArray[Envelope]()).Length(), 0)

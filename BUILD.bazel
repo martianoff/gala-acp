@@ -1,0 +1,44 @@
+load("@rules_gala//gala:defs.bzl", "gala_library", "gala_test")
+
+# gala-acp — the Agent Communication Protocol kernel. A single pure-data GALA
+# package: envelope identity + dedup Ledger + delivery FSM + the generic
+# agent-run contract. No Go sources, no external deps beyond the GALA stdlib.
+
+gala_library(
+    name = "gala_acp",
+    srcs = [
+        "delivery.gala",
+        "envelope.gala",
+        "ledger.gala",
+        "run.gala",
+    ],
+    importpath = "github.com/martianoff/gala-acp",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gala//collection_immutable",
+        "@gala//time_utils",
+    ],
+)
+
+gala_test(
+    name = "gala_acp_test",
+    srcs = [
+        "delivery_test.gala",
+        "envelope_test.gala",
+        "ledger_test.gala",
+        "run_test.gala",
+    ],
+    importpath = "github.com/martianoff/gala-acp",
+    lib_srcs = [
+        "delivery.gala",
+        "envelope.gala",
+        "ledger.gala",
+        "run.gala",
+    ],
+    pkg = "acp",
+    deps = [
+        "@gala//collection_immutable",
+        "@gala//go_interop",
+        "@gala//time_utils",
+    ],
+)
