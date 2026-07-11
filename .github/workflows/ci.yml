@@ -10,7 +10,7 @@ on:
 # Bump GALA_VERSION whenever a new gala release ships. Keep it in lockstep
 # with the `gala` line in gala.mod / the `gala` bazel_dep in MODULE.bazel.
 env:
-  GALA_VERSION: "0.60.0"
+  GALA_VERSION: "0.70.0"
 
 jobs:
   test:
