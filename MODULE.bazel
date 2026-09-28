@@ -4,7 +4,7 @@ module(
     # release tag so registry consumers see a MODULE.bazel whose
     # module(version = X) matches the version they requested via
     # bazel_dep(name = "gala_acp", version = X) — bzlmod rejects it otherwise.
-    version = "0.3.0",
+    version = "0.4.0",
 )
 
 bazel_dep(name = "platforms", version = "1.0.0")
