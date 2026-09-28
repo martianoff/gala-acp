@@ -1,7 +1,5 @@
 module github.com/martianoff/gala-acp
 
-gala 0.80.0
+gala 0.84.0
 
-require (
-	github.com/google/uuid v1.6.0 // go
-)
+require github.com/google/uuid v1.6.0 // go
