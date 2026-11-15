@@ -405,7 +405,6 @@
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_cc/0.2.8/MODULE.bazel": "not found",
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_foreign_cc/0.9.0/MODULE.bazel": "not found",
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_fuzzing/0.5.2/MODULE.bazel": "not found",
-    "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_gala/0.6.11/MODULE.bazel": "fe7e0b615729e811a7fd4179946029db3cc279e964ec6c5bb336236c2fd2e431",
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_gala/0.6.12/MODULE.bazel": "6151f6f66bf5e2c70727c8486ee8db3926ec8d239253f7f184608300e772091a",
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_gala/0.6.12/source.json": "057dcf62a463f851a6ff2c62a5e778e6839ffe33983153b0461eee856d2fda97",
     "https://raw.githubusercontent.com/martianoff/rules-gala/main/modules/rules_go/0.41.0/MODULE.bazel": "not found",
